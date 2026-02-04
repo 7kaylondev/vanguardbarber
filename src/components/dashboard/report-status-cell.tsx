@@ -32,7 +32,7 @@ export function ReportStatusCell({ id, type, currentStatus }: ReportStatusCellPr
             if (type === 'appointment') {
                 res = await updateAppointmentStatus({ appointmentId: id, status: newStatus as any })
             } else {
-                res = await updateOrderStatus({ orderId: id, status: newStatus as any })
+                res = await updateOrderStatus(id, newStatus)
             }
 
             if (res?.error) throw new Error(res.error)
