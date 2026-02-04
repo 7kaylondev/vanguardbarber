@@ -8,9 +8,9 @@ import { StatusBadge } from "@/components/showcase/status-badge"
 import { ShowcaseAuthProvider } from "@/components/showcase/auth/showcase-auth-provider"
 import { ShowcaseHeader } from "@/components/showcase/showcase-header"
 
-export default async function ShowcasePage({ params }: { params: { slug: string } }) {
+export default async function ShowcasePage(props: { params: Promise<{ slug: string }> }) {
     const supabase = await createClient()
-    const { slug } = await params
+    const { slug } = await props.params
 
     // 1. Fetch Shop Data
     const { data: shop } = await supabase

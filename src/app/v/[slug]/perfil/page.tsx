@@ -9,9 +9,9 @@ import { HistoryList } from "@/components/showcase/profile/history-list"
 import { ArrowLeft } from "lucide-react"
 import Link from "next/link"
 
-export default async function ProfilePage({ params }: { params: { slug: string } }) {
+export default async function ProfilePage(props: { params: Promise<{ slug: string }> }) {
     const supabase = await createClient()
-    const { slug } = await params
+    const { slug } = await props.params
 
     const { data: { user } } = await supabase.auth.getUser()
 
