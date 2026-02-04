@@ -6,7 +6,7 @@ import Image from 'next/image'
 import { useState } from 'react'
 import { Button } from "@/components/ui/button"
 import { LeadTrapForm } from "@/components/landing/lead-trap-form"
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, Variants } from 'framer-motion'
 import {
     TrendingUp,
     ShieldCheck,
@@ -34,7 +34,7 @@ import {
 } from "lucide-react"
 
 // --- Animation Variants ---
-const fadeInUp = {
+const fadeInUp: Variants = {
     hidden: { opacity: 0, y: 30 },
     visible: {
         opacity: 1,
@@ -43,7 +43,7 @@ const fadeInUp = {
     }
 }
 
-const staggerContainer = {
+const staggerContainer: Variants = {
     hidden: { opacity: 0 },
     visible: {
         opacity: 1,
