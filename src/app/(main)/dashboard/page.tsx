@@ -62,7 +62,8 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
             *,
             clients(name, phone),
             professionals(name),
-            products_v2(name, price)
+            products_v2(name, price),
+            appointment_products(price, quantity)
         `)
         .eq('barbershop_id', shop.id)
         .gte('date', startDateStr)
@@ -72,11 +73,40 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
 
     // Stats calculations using ONLY periodAppointments
     let revenue = 0
+    let revenueServices = 0
+    let revenueProducts = 0
     let sales = 0
     const confirmedApps = periodAppointments?.filter(a => a.status === 'confirmed' || a.status === 'completed') || []
     sales = confirmedApps.length
+
     confirmedApps.forEach((app: any) => {
-        revenue += (app.price ?? app.products_v2?.price ?? 0)
+        // 1. Service Revenue
+        // If app.price is set (historical snapshot), use it.
+        // BUT logic check: app.price often includes the total? 
+        // IF we want to separate, we need to know what part is service.
+        // Usually app.price IS the total finalized price. 
+        // IF app.price is defined, it might confuse things if we also sum products.
+        // LET'S ASSUME: app.price is the Service Price snapshot OR Total?
+        // In complete-appointment-dialog, we saved 'finalTotal' to app.price.
+        // This makes separation hard if we overwrite app.price with everything.
+        // RECUPERATION STRATEGY:
+        // Product Revenue = Sum(appointment_products).
+        // Service Revenue = Total (app.price) - Product Revenue.
+
+        const totalAppRevenue = (app.price ?? app.products_v2?.price ?? 0)
+
+        // Calculate Products Revenue
+        const appProductsRevenue = app.appointment_products?.reduce((acc: number, item: any) => {
+            return acc + (item.price * item.quantity)
+        }, 0) || 0
+
+        // Service Revenue is the remainder
+        // (Prevent negative if data is inconsistent)
+        const appServiceRevenue = Math.max(0, totalAppRevenue - appProductsRevenue)
+
+        revenue += totalAppRevenue
+        revenueProducts += appProductsRevenue
+        revenueServices += appServiceRevenue
     })
 
     // 2. New Clients (Período Visualizado)
@@ -158,6 +188,8 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
             <DashboardStats
                 balance={balance}
                 revenue={revenue}
+                revenueServices={revenueServices}
+                revenueProducts={revenueProducts}
                 sales={sales}
                 newClients={newClients || 0}
             />
