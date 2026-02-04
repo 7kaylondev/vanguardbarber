@@ -1,0 +1,112 @@
+/* Thermal Printer Optimization */
+@media print {
+    @page {
+        margin: 0;
+        size: 80mm auto;
+        /* Target 80mm thermal receipt width */
+    }
+
+    body {
+        margin: 0;
+        padding: 0;
+        background: white !important;
+        color: black !important;
+        font-family: 'Courier New', Courier, monospace;
+        /* Monospace aligns better on receipts */
+        width: 80mm;
+    }
+
+    /* Hide UI Elements */
+    nav,
+    header,
+    aside,
+    .no-print,
+    button,
+    input {
+        display: none !important;
+    }
+
+    /* Reset Layout for Print */
+    .print-container {
+        width: 100%;
+        max-width: 80mm;
+        padding: 5px;
+        margin: 0 auto;
+        display: block !important;
+    }
+
+    /* Typography */
+    h1,
+    h2,
+    h3 {
+        color: black !important;
+        text-align: center;
+        margin-bottom: 5px;
+    }
+
+    h1 {
+        font-size: 16px;
+        font-weight: bold;
+    }
+
+    h2 {
+        font-size: 14px;
+    }
+
+    p {
+        font-size: 12px;
+        margin: 2px 0;
+    }
+
+    .print-text-sm {
+        font-size: 10px;
+    }
+
+    .print-text-xs {
+        font-size: 9px;
+    }
+
+    /* Tables */
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 10px;
+    }
+
+    th,
+    td {
+        text-align: left;
+        padding: 2px 0;
+        border-bottom: 1px dashed #000;
+    }
+
+    th {
+        font-weight: bold;
+    }
+
+    /* Utils */
+    .text-center {
+        text-align: center;
+    }
+
+    .text-right {
+        text-align: right;
+    }
+
+    .border-b {
+        border-bottom: 1px dashed black;
+    }
+
+    .border-t {
+        border-top: 1px dashed black;
+    }
+
+    .print-only {
+        display: block !important;
+    }
+}
+
+/* Hide print container on screen */
+.print-container {
+    display: none;
+}

@@ -1,0 +1,73 @@
+
+'use client'
+
+import { Button } from "@/components/ui/button"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Trash2, Scissors, Pencil } from "lucide-react"
+import { toast } from "sonner"
+import { deleteProduct } from "@/app/(main)/dashboard/actions"
+import { ProductFormDialog } from "./product-form-dialog"
+
+export function ServicesManager({ services, shopId }: { services: any[], shopId: string }) {
+
+    async function handleDelete(id: string) {
+        if (!confirm("Tem certeza que deseja remover este serviço?")) return
+        const res = await deleteProduct(id)
+        if (res?.error) toast.error(res.error)
+        else toast.success("Serviço removido.")
+    }
+
+    return (
+        <div className="space-y-6">
+            <div className="flex justify-between items-center bg-[#111] p-4 rounded-lg border border-zinc-800">
+                <div className="flex items-center gap-4 text-green-500 bg-green-900/10 px-4 py-2 rounded border border-green-900/30">
+                    <Scissors size={20} />
+                    <span className="font-mono text-sm">{services.length} Serviços Ativos</span>
+                </div>
+
+                <ProductFormDialog shopId={shopId} type="service" />
+            </div>
+
+            <div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0A0A0A]">
+                <Table>
+                    <TableHeader className="bg-zinc-900">
+                        <TableRow>
+                            <TableHead className="text-zinc-400">Nome</TableHead>
+                            <TableHead className="text-zinc-400">Descrição</TableHead>
+                            <TableHead className="text-zinc-400 text-right">Preço</TableHead>
+                            <TableHead className="w-[100px] text-right">Ações</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {services.map((service) => (
+                            <TableRow key={service.id} className="border-b border-zinc-900 hover:bg-zinc-900/50">
+                                <TableCell className="font-medium text-white">{service.name}</TableCell>
+                                <TableCell className="text-zinc-500 text-xs truncate max-w-[200px]">{service.description || "-"}</TableCell>
+                                <TableCell className="text-right font-mono text-[#d4af37]">
+                                    R$ {Number(service.price).toFixed(2)}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                    <div className="flex justify-end gap-2">
+                                        <ProductFormDialog
+                                            shopId={shopId}
+                                            type="service"
+                                            initialData={service}
+                                            trigger={
+                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-blue-400 hover:bg-blue-900/20">
+                                                    <Pencil size={14} />
+                                                </Button>
+                                            }
+                                        />
+                                        <Button variant="ghost" size="icon" onClick={() => handleDelete(service.id)} className="h-8 w-8 text-red-500 hover:bg-red-900/20">
+                                            <Trash2 size={14} />
+                                        </Button>
+                                    </div>
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+            </div>
+        </div>
+    )
+}
