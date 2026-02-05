@@ -1,5 +1,6 @@
 
 import { createClient } from '@/lib/supabase/server'
+import { cookies } from 'next/headers'
 import { DashboardStats } from "@/components/admin/dashboard-stats"
 import { Calendar, Clock } from "lucide-react"
 import { format } from 'date-fns'
@@ -9,6 +10,8 @@ import { NewAppointmentCard } from '@/components/dashboard/new-appointment-card'
 import { DateRangeFilter } from '@/components/dashboard/date-range-filter'
 import { ViewFutureReportsButton } from "@/components/dashboard/view-future-reports-button"
 import { toZonedTime, formatInTimeZone } from 'date-fns-tz'
+import { getDashboardMetrics } from "@/lib/data/get-dashboard-metrics"
+import { getCurrentShop } from "@/lib/tenant/get-current-shop"
 
 export const dynamic = 'force-dynamic'
 
@@ -18,18 +21,20 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
     const searchParams = await props.searchParams
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
+    const cookieStore = await cookies()
+    const currentShopCookie = cookieStore.get('current_shop_id')?.value || 'MISSING'
 
     if (!user) return <div>Não autorizado</div>
 
-    // Get Shop
-    const { data: shop } = await supabase.from('barbershops').select('id, slug').eq('owner_id', user.id).single()
+    // Get Shop (Unified Logic)
+
+    const shop = await getCurrentShop(supabase)
 
     if (!shop) return <div>Loja não encontrada...</div>
 
     // --- TIMEZONE ROBUST LOGIC ---
     // 1. Determine "Today" in BRL
-    const nowBrl = toZonedTime(new Date(), TIMEZONE)
-    const todayStr = format(nowBrl, 'yyyy-MM-dd')
+    const todayStr = formatInTimeZone(new Date(), TIMEZONE, 'yyyy-MM-dd')
 
     // 2. Resolve Start/End Strings (YYYY-MM-DD)
     const dateQuery = searchParams.date
@@ -62,8 +67,7 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
             *,
             clients(name, phone),
             professionals(name),
-            products_v2(name, price),
-            appointment_products(price, quantity)
+            products_v2(name, price)
         `)
         .eq('barbershop_id', shop.id)
         .gte('date', startDateStr)
@@ -71,43 +75,20 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
         .order('date', { ascending: true })
         .order('time', { ascending: true })
 
-    // Stats calculations using ONLY periodAppointments
-    let revenue = 0
-    let revenueServices = 0
-    let revenueProducts = 0
-    let sales = 0
-    const confirmedApps = periodAppointments?.filter(a => a.status === 'confirmed' || a.status === 'completed') || []
-    sales = confirmedApps.length
+    // --- METRICS SERVICE INTEGRATION ---
 
-    confirmedApps.forEach((app: any) => {
-        // 1. Service Revenue
-        // If app.price is set (historical snapshot), use it.
-        // BUT logic check: app.price often includes the total? 
-        // IF we want to separate, we need to know what part is service.
-        // Usually app.price IS the total finalized price. 
-        // IF app.price is defined, it might confuse things if we also sum products.
-        // LET'S ASSUME: app.price is the Service Price snapshot OR Total?
-        // In complete-appointment-dialog, we saved 'finalTotal' to app.price.
-        // This makes separation hard if we overwrite app.price with everything.
-        // RECUPERATION STRATEGY:
-        // Product Revenue = Sum(appointment_products).
-        // Service Revenue = Total (app.price) - Product Revenue.
 
-        const totalAppRevenue = (app.price ?? app.products_v2?.price ?? 0)
-
-        // Calculate Products Revenue
-        const appProductsRevenue = app.appointment_products?.reduce((acc: number, item: any) => {
-            return acc + (item.price * item.quantity)
-        }, 0) || 0
-
-        // Service Revenue is the remainder
-        // (Prevent negative if data is inconsistent)
-        const appServiceRevenue = Math.max(0, totalAppRevenue - appProductsRevenue)
-
-        revenue += totalAppRevenue
-        revenueProducts += appProductsRevenue
-        revenueServices += appServiceRevenue
+    const metrics = await getDashboardMetrics(supabase, {
+        shopId: shop.id,
+        startDate: startDateStr,
+        endDate: endDateStr
     })
+
+    // Map to Dashboard Vars
+    const revenue = metrics.realized_total
+    const revenueServices = metrics.services_total
+    const revenueProducts = metrics.products_total
+    const sales = metrics.sales_count
 
     // 2. New Clients (Período Visualizado)
     // 'created_at' is timestamptz. MUST use ISO ranges with offset.
@@ -162,8 +143,17 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
 
     const listTitle = isToday ? "Agenda do Dia" : `Agendamentos: ${displayLabel}`
 
+
+
+
+
+
+
+        ;
+
     return (
         <div className="space-y-8 pb-10">
+
             {/* Header Section */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
@@ -205,7 +195,7 @@ export default async function DashboardPage(props: { searchParams: Promise<{ sta
                     </div>
 
                     <div className="bg-[#111] border border-zinc-800 rounded-xl p-6 min-h-[400px]">
-                        <AgendaList initialAppointments={events} barbershopSlug={shop.slug} />
+                        <AgendaList initialAppointments={events} barbershopSlug={shop.slug} shopId={shop.id} />
                     </div>
                 </div>
 

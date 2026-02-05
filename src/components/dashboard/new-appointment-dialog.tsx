@@ -127,6 +127,7 @@ export function NewAppointmentDialog({
                 client_phone: clientPhone,
                 date: dateStr,
                 time: selectedTime,
+                status: isImmediate ? 'confirmed' : 'pending'
             })
 
             if (res.error) {

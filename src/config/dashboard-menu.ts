@@ -19,6 +19,7 @@ export const MENU_GROUPS = [
         title: "MENU",
         items: [
             { icon: LayoutDashboard, label: "Início", href: "/dashboard" },
+            { icon: ClipboardList, label: "Agenda", href: "/dashboard/agendamentos" },
             { icon: Users, label: "Equipe", href: "/dashboard/equipe" },
             { icon: User, label: "CRM", href: "/dashboard/clientes" },
             { icon: User, label: "Usuários", href: "/dashboard/usuarios" },

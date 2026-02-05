@@ -75,6 +75,10 @@ export function ProductFormDialog({ shopId, type, category = "retail", trigger, 
                             <Input name="price" defaultValue={initialData?.price} type="number" step="0.01" placeholder="0.00" required className="bg-black border-zinc-700" />
                         </div>
                         <div className="space-y-2">
+                            <Label>Estoque Atual</Label>
+                            <Input name="quantity" defaultValue={initialData?.quantity || 0} type="number" placeholder="0" className="bg-black border-zinc-700" />
+                        </div>
+                        <div className="col-span-2 space-y-2">
                             <Label>Imagem URL (Opcional)</Label>
                             <Input name="image_url" defaultValue={initialData?.image_url} placeholder="https://..." className="bg-black border-zinc-700" />
                         </div>

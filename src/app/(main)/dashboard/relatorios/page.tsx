@@ -1,14 +1,19 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { cookies } from "next/headers"
 import { format } from "date-fns"
 import { ptBR } from "date-fns/locale"
 import { Calendar as CalendarIcon, Printer } from "lucide-react"
+import React from "react"
 import { DynamicDateRangeFilter } from "@/components/dashboard/dynamic-date-range-filter"
 import { ReportStatusCell } from "@/components/dashboard/report-status-cell"
 import { PrintButton } from "./print-button"
+import { QuickReportSummary } from "./quick-report-summary" // NEW IMPORT
 import { PrintReceiptButton } from "@/components/dashboard/print-receipt-button"
 import "./thermal.css"
 import { toZonedTime, formatInTimeZone } from 'date-fns-tz'
+import { getCurrentShopId } from "@/lib/tenant/get-current-shop-id.server"
+import { ShopSelector } from "@/components/tenant/shop-selector"
 
 export const dynamic = 'force-dynamic'
 
@@ -18,10 +23,31 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
     const searchParams = await props.searchParams
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
+    const cookieStore = await cookies()
+    const currentShopCookie = cookieStore.get('current_shop_id')?.value || 'MISSING'
 
     if (!user) redirect('/login')
 
-    const { data: shop } = await supabase.from('barbershops').select('id, name, slug').eq('owner_id', user.id).single()
+    // --- STRICT TENANT SELECTION ---
+    const currentShopId = await getCurrentShopId(supabase)
+
+    if (!currentShopId) {
+        const { data: userShops } = await supabase
+            .from('barbershops')
+            .select('id, name, slug')
+            .eq('owner_id', user.id)
+
+        if (!userShops || userShops.length === 0) {
+            return <div>Você ainda não possui nenhuma barbearia.</div>
+        }
+        return <ShopSelector shops={userShops} userId={user.id} />
+    }
+
+    const { data: shop } = await supabase
+        .from('barbershops')
+        .select('*')
+        .eq('id', currentShopId)
+        .single()
 
     if (!shop) return <div>Loja não encontrada...</div>
 
@@ -108,11 +134,38 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
     // 2. Fetch REALIZED
     const { data: realizedApps } = await supabase
         .from('agendamentos')
-        .select(`*, clients(name), products_v2(name, price)`)
+        .select(`*, clients(name), products_v2(name, price, category)`)
         .eq('barbershop_id', shop.id)
         .eq('status', 'completed')
         .gte('concluded_at', startIso)
         .lte('concluded_at', endIso)
+
+    // --- MANUAL JOIN: Appointment Items (Report Detail) ---
+    const realizedIds = realizedApps?.map(a => a.id) || []
+    let manualItems: any[] = []
+
+    if (realizedIds.length > 0) {
+        const { data: items } = await supabase
+            .from('appointment_products')
+            .select('*')
+            .in('appointment_id', realizedIds)
+        manualItems = items || []
+    }
+
+    // Merge Items
+    const realizedWithItems = realizedApps?.map(app => ({
+        ...app,
+        appointment_products: manualItems.filter(i => i.appointment_id === app.id)
+    })) || []
+
+
+
+    // For Projected, we usually don't have items yet (or we do if Quick Sale added them?)
+    // Let's assume projected usually doesn't need detailed item breakdown for "Revenue", 
+    // BUT if we want consistency, we should do it. User focused on "Consumption breakdown", usually for closed sales.
+    // Let's stick to Realized for the detailed report for now, but apply same logic if needed.
+    // Actually, Quick Sale creates COMPLETED appointments immediately (realized).
+    // So modifying 'realizedApps' is key.
 
     // 3. Fetch PROJECTED
     // Note: 'date' column in 'agendamentos' is usually just 'YYYY-MM-DD'.
@@ -123,7 +176,7 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
     // If it's a 'date' type column in PG, just passing the YYYY-MM-DD string is correct.
     const { data: projectedApps } = await supabase
         .from('agendamentos')
-        .select(`*, clients(name), products_v2(name, price)`)
+        .select(`*, clients(name), products_v2(name, price, category)`)
         .eq('barbershop_id', shop.id)
         .in('status', ['confirmed', 'pending'])
         .gte('date', startDate)
@@ -163,6 +216,7 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
 
     const ticketMedia = totalTransactions > 0 ? totalRevenue / totalTransactions : 0
 
+
     // UI Date Formatting
     // Helper to format a potentially UTC string into BRL display "dd/MM"
     const displayDateRef = (isoStringOrDate: string | Date | null) => {
@@ -194,8 +248,38 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
         : `${formatSafe(startDate)} até ${formatSafe(endDate)}`
 
     // Unified List
-    const allApps = [...(realizedApps || []), ...(projectedApps || [])]
+    // Use realizedWithItems instead of realizedApps for completed ones
+    const allApps = [...(realizedWithItems || []), ...(projectedApps || [])]
     const allOrders = [...(realizedOrders || []), ...(projectedOrders || [])]
+
+    // --- QUICK SUMMARY METRICS ---
+    let totalServiceRev = 0
+    let totalProductRev = 0
+
+    allApps.forEach(app => {
+        const mainPrice = app.products_v2?.price || 0
+        const cat = app.products_v2?.category?.toLowerCase() || ''
+        const isProductMain = cat.includes('produto') || cat.includes('bebida') || cat.includes('bar') || app.origin === 'quick_sale'
+
+        if (isProductMain) {
+            totalProductRev += mainPrice
+        } else {
+            totalServiceRev += mainPrice
+        }
+
+        if (app.appointment_products) {
+            app.appointment_products.forEach((i: any) => {
+                totalProductRev += (i.price * i.quantity)
+            })
+        }
+    })
+
+    const reportData = {
+        totalService: totalServiceRev,
+        totalProduct: totalProductRev,
+        totalApps: allApps.length,
+        ticketAvg: ticketMedia
+    }
 
     const unifiedList = [
         ...allApps.map(a => {
@@ -234,7 +318,15 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
                 client: a.clients?.name || a.client_name || 'Cliente',
                 item: a.products_v2?.name || 'Serviço',
                 status: a.status,
-                value: a.price ?? a.products_v2?.price ?? 0
+                value: a.price ?? a.products_v2?.price ?? 0,
+                // Custom Label Logic
+                label: (() => {
+                    if (a.origin === 'quick_sale' && !a.service_id) return 'Consumo' // Assumption: Quick Sale is mostly Consumo/Product
+                    const cat = a.products_v2?.category?.toLowerCase() || ''
+                    if (cat.includes('bar') || cat.includes('bebida') || cat.includes('consumo')) return 'Consumo'
+                    if (cat.includes('produto') || a.products_v2?.type === 'product') return 'Produto'
+                    return 'Serviço'
+                })()
             }
         }),
         ...allOrders.map(o => {
@@ -247,10 +339,12 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
                 client: o.client_name || 'Cliente',
                 item: `Pedido (${o.items?.length || 1} itens)`,
                 status: o.status,
-                value: o.total
+                value: o.total,
+                label: 'Produtos' // Orders are always products? Actually "Pedido" usually implies products.
             }
         })
     ].sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime())
+
 
     return (
         <div className="space-y-6 pb-10">
@@ -266,6 +360,7 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
                 </div>
                 <div className="flex items-center gap-4">
                     <DynamicDateRangeFilter />
+                    <QuickReportSummary reportData={reportData} />
                     <PrintButton />
                 </div>
             </div>
@@ -319,8 +414,9 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
                             {unifiedList.map((item) => (
                                 <tr key={item.id} className="hover:bg-zinc-900/50">
                                     <td className="px-4 py-3">
-                                        <span className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${item.type === 'appointment' ? 'bg-purple-900/20 text-purple-500' : 'bg-orange-900/20 text-orange-500'}`}>
-                                            {item.type === 'appointment' ? 'Serviço' : 'Produto'}
+                                        <span className={`text-[10px] px-2 py-1 rounded font-bold uppercase ${['Consumo', 'Produto'].includes(item.label) ? 'bg-orange-900/20 text-orange-500' : 'bg-purple-900/20 text-purple-500'
+                                            }`}>
+                                            {item.label}
                                         </span>
                                     </td>
                                     <td className="px-4 py-3 font-mono text-zinc-300">
@@ -392,13 +488,39 @@ export default async function ReportsPage(props: { searchParams: Promise<{ start
                         </tr>
                     </thead>
                     <tbody>
-                        {allApps.map((app) => (
-                            <tr key={app.id}>
-                                <td>{app.time.substring(0, 5)}</td>
-                                <td>{app.clients?.name?.substring(0, 10)}</td>
-                                <td className="text-right">{app.products_v2?.price?.toFixed(2)}</td>
-                            </tr>
-                        ))}
+                        {allApps.map((app) => {
+                            // Logic to show Service + Items
+                            const items = app.appointment_products || []
+                            const servicePrice = app.products_v2?.price || 0
+                            const hasItems = items.length > 0
+
+                            return (
+                                <React.Fragment key={app.id}>
+                                    <tr key={app.id}>
+                                        <td>{app.time.substring(0, 5)}</td>
+                                        <td>{app.clients?.name?.substring(0, 10)}</td>
+                                        {/* Main Service Price */}
+                                        <td className="text-right">{servicePrice > 0 ? servicePrice.toFixed(2) : '-'}</td>
+                                    </tr>
+                                    {/* Render Items Rows */}
+                                    {hasItems && items.map((i: any, idx: number) => (
+                                        <tr key={`${app.id}-item-${idx}`} className="text-[10px] text-gray-500">
+                                            <td></td>
+                                            <td className="pl-2">+ {i.name.substring(0, 12)}</td>
+                                            <td className="text-right">{(i.price * i.quantity).toFixed(2)}</td>
+                                        </tr>
+                                    ))}
+                                    {/* Subtotal if items exist */}
+                                    {hasItems && (
+                                        <tr className="font-bold border-b border-dashed">
+                                            <td></td>
+                                            <td className="text-right text-[10px]">Total:</td>
+                                            <td className="text-right">{app.price?.toFixed(2)}</td>
+                                        </tr>
+                                    )}
+                                </React.Fragment>
+                            )
+                        })}
                     </tbody>
                 </table>
 

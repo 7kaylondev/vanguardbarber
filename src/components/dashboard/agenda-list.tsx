@@ -3,7 +3,8 @@ import { createClient } from '@/lib/supabase/client'
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { Calendar, User, Scissors, Trash2, Pencil, MessageCircle, Check, X } from "lucide-react"
+import { Calendar, User, Scissors, Trash2, Pencil, MessageCircle, Check, X, DollarSign } from "lucide-react"
+import { QuickSaleDialog } from "./quick-sale-dialog"
 import { CompleteAppointmentDialog } from "./complete-appointment-dialog"
 import { Button } from "@/components/ui/button"
 import {
@@ -44,14 +45,16 @@ interface Appointment {
 interface AgendaListProps {
     initialAppointments: Appointment[]
     barbershopSlug: string
+    shopId: string
 }
 
-export function AgendaList({ initialAppointments, barbershopSlug }: AgendaListProps) {
+export function AgendaList({ initialAppointments, barbershopSlug, shopId }: AgendaListProps) {
     const router = useRouter()
     const [appointments, setAppointments] = useState(initialAppointments)
     const [isCancelling, setIsCancelling] = useState<string | null>(null)
     const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null)
     const [completingAppointment, setCompletingAppointment] = useState<Appointment | null>(null)
+    const [sellingAppointment, setSellingAppointment] = useState<Appointment | null>(null)
 
 
     // Sync state if props change (revalidation from router.refresh())
@@ -163,6 +166,10 @@ Está tudo confirmado. Qualquer coisa é só chamar 💈✂️`
                         >
                             <MessageCircle size={16} />
                         </Button>
+                        <Button size="icon" variant="ghost" className="h-8 w-8 text-zinc-500 hover:text-green-500 hover:bg-zinc-800" onClick={() => setSellingAppointment(app)}>
+                            <DollarSign size={16} />
+                        </Button>
+
                         <Button
                             variant="ghost" size="icon"
                             className="h-8 w-8 text-zinc-500 hover:text-[#d4af37] hover:bg-zinc-800 disabled:opacity-30 disabled:hover:bg-transparent"
@@ -227,7 +234,7 @@ Está tudo confirmado. Qualquer coisa é só chamar 💈✂️`
             <div className="flex flex-col items-center justify-center h-64 text-zinc-500 space-y-4">
                 <Calendar size={48} className="text-zinc-700" />
                 <p>Nenhum agendamento para hoje.</p>
-                <Button variant="outline" className="border-zinc-700" onClick={() => router.push('?period=30')}>Ver Agenda Completa</Button>
+                <Button variant="outline" className="border-zinc-700" onClick={() => router.push('/dashboard/agendamentos')}>Ver Agenda Completa</Button>
             </div>
         )
     }
@@ -289,6 +296,16 @@ Está tudo confirmado. Qualquer coisa é só chamar 💈✂️`
                         setCompletingAppointment(null)
                         router.refresh()
                     }}
+                />
+            )}
+
+            {sellingAppointment && (
+                <QuickSaleDialog
+                    isOpen={!!sellingAppointment}
+                    onOpenChange={(open) => !open && setSellingAppointment(null)}
+                    slug={barbershopSlug}
+                    shopId={shopId}
+                    defaultClientName={sellingAppointment.client_name}
                 />
             )}
         </div>

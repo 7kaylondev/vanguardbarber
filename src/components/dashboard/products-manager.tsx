@@ -35,6 +35,7 @@ export function ProductsManager({ products, shopId, categoryContext = 'retail' }
                         <TableRow>
                             <TableHead className="text-zinc-400">Produto</TableHead>
                             <TableHead className="text-zinc-400">Descrição</TableHead>
+                            <TableHead className="text-zinc-400 text-center">Estoque</TableHead>
                             <TableHead className="text-zinc-400 text-right">Preço</TableHead>
                             <TableHead className="w-[100px] text-right">Ações</TableHead>
                         </TableRow>
@@ -47,6 +48,9 @@ export function ProductsManager({ products, shopId, categoryContext = 'retail' }
                                     {item.name}
                                 </TableCell>
                                 <TableCell className="text-zinc-500 text-xs truncate max-w-[200px]">{item.description || "-"}</TableCell>
+                                <TableCell className="text-center font-mono text-zinc-300">
+                                    {item.quantity || 0}
+                                </TableCell>
                                 <TableCell className="text-right font-mono text-[#d4af37]">
                                     R$ {Number(item.price).toFixed(2)}
                                 </TableCell>

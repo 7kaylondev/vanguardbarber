@@ -2,6 +2,7 @@
 'use server'
 
 import { createClient } from "@/lib/supabase/server"
+import { createAdminClient } from "@/lib/supabase/admin"
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 
@@ -77,6 +78,9 @@ export async function upsertProduct(formData: FormData) {
     const category = formData.get('category') as string || 'retail' // NEW: retail or bar
     const image_url = formData.get('image_url') as string
     const highlight = formData.get('highlight') === 'true'
+    const quantity = parseInt(formData.get('quantity') as string || '0')
+
+    console.log('[UpsertProduct] Received:', { name, category, quantity })
 
     // Logic: Bar items are hidden online
     const is_visible_online = category === 'retail'
@@ -91,6 +95,7 @@ export async function upsertProduct(formData: FormData) {
         is_visible_online, // NEW: Enforce visibility rule
         image_url,
         highlight,
+        quantity, // NEW: Stock
         status: true // Active by default
     }
 
@@ -340,7 +345,7 @@ function formatTime(minutes: number) {
 
 // --- PERSISTENCE ACTIONS ---
 
-import { createAdminClient } from "@/lib/supabase/admin"
+// (Duplicate import removed)
 
 export async function createAppointment(data: {
     barbershop_id: string
@@ -350,134 +355,285 @@ export async function createAppointment(data: {
     date: string
     time: string
     professional_id?: string
+    status?: 'pending' | 'confirmed'
 }) {
+    console.log("[CreateAppt] Initiating...", data)
+    try {
+        const supabase = await createClient()
+        const adminSupabase = createAdminClient()
+
+        // 1. Identify User Context
+        // Getting user from AUTH is good, but might be null if anonymous booking
+        const { data: { user } } = await supabase.auth.getUser()
+        const authUserId = user ? user.id : null
+
+        // 2. FETCH SHOP OWNER
+        // Admin client bypasses RLS, so this should not fail unless ID is wrong
+        const { data: shop, error: shopError } = await adminSupabase
+            .from('barbershops')
+            .select('owner_id')
+            .eq('id', data.barbershop_id)
+            .single()
+
+        if (shopError || !shop || !shop.owner_id) {
+            console.error("[CreateAppt] Shop/Owner Error:", shopError)
+            return { error: "Erro interno: Barbearia não identificada." }
+        }
+        const shopOwnerId = shop.owner_id
+
+        let clientId: string | null = null
+        const cleanPhone = data.client_phone ? data.client_phone.replace(/\D/g, '') : ""
+        const hasPhone = cleanPhone.length > 8 // Minimal validation
+
+        // 3. STRATEGY A: Resolve by Auth ID (BUT IGNORE if User is Owner/Admin)
+        // If the logged-in user is the Shop Owner, they are "Acting as Admin", not booking for themselves.
+        if (authUserId && authUserId !== shopOwnerId) {
+            const { data: existingClient } = await adminSupabase
+                .from('clients')
+                .select('id')
+                .eq('barbershop_id', data.barbershop_id)
+                .eq('auth_user_id', authUserId)
+                .single()
+
+            if (existingClient) clientId = existingClient.id
+        }
+
+        // 4. STRATEGY B: Resolve by Phone (ONLY if phone exists)
+        if (!clientId && hasPhone) {
+            const { data: phoneClient } = await adminSupabase
+                .from('clients')
+                .select('id, auth_user_id')
+                .eq('barbershop_id', data.barbershop_id)
+                .eq('phone', data.client_phone) // strict match on provided string
+                .limit(1)
+                .single()
+
+            if (phoneClient) {
+                clientId = phoneClient.id
+                // Link Auth if applicable (And NOT Admin)
+                if (authUserId && authUserId !== shopOwnerId && !phoneClient.auth_user_id) {
+                    await adminSupabase.from('clients').update({ auth_user_id: authUserId }).eq('id', clientId)
+                }
+            }
+        }
+
+        // 5. STRATEGY C: Create New Client
+        if (!clientId) {
+            console.log("[CreateAppt] Creating new client...")
+            // If phone is empty, we must be careful with Unique Constraints if they exist.
+            // Assuming (barbershop_id, phone) is unique? If so, we can't insert duplicates with empty phone.
+            // Fallback: If no phone, treat as "Walk-in" style client, maybe just insert without phone if allowed or use null?
+            // Schema usually allows empty strings if not unique. If Unique index ignores nulls, use null.
+            // Let's use null for phone if empty.
+
+            const clientPayload = {
+                barbershop_id: data.barbershop_id,
+                owner_id: shopOwnerId,
+                name: data.client_name,
+                phone: hasPhone ? data.client_phone : `no-phone-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                auth_user_id: (authUserId && authUserId !== shopOwnerId) ? authUserId : null
+            }
+
+            // Attempt Insert
+            const { data: newClient, error: createError } = await adminSupabase
+                .from('clients')
+                .insert(clientPayload)
+                .select('id')
+                .single()
+
+            if (createError) {
+                console.error("[CreateAppt] Create Client Error:", createError)
+                // Fallback: Maybe client exists with same name?
+                // Try searching by NAME if creation failed (likely unique constraint on something else?)
+                const { data: nameClient } = await adminSupabase
+                    .from('clients')
+                    .select('id')
+                    .eq('barbershop_id', data.barbershop_id)
+                    .ilike('name', data.client_name)
+                    .limit(1)
+                    .single()
+
+                if (nameClient) {
+                    clientId = nameClient.id
+                } else {
+                    return { error: "Erro ao criar cadastro do cliente: " + createError.message }
+                }
+            } else if (newClient) {
+                clientId = newClient.id
+            }
+        }
+
+        if (!clientId) return { error: "Falha crítica ao identificar cliente." }
+
+        // 6. Ensure Relation (Repair)
+        await adminSupabase
+            .from('clients')
+            .update({ owner_id: shopOwnerId })
+            .eq('id', clientId)
+
+        // 6.5 Fetch Service Price
+        const { data: serviceVal } = await adminSupabase
+            .from('products_v2')
+            .select('price')
+            .eq('id', data.service_id)
+            .single()
+        const initialPrice = serviceVal ? serviceVal.price : 0
+
+        // 7. Create Appointment
+        const { error: apptError } = await adminSupabase.from('agendamentos').insert({
+            barbershop_id: data.barbershop_id,
+            owner_id: shopOwnerId, // Explicit
+            client_name: data.client_name,
+            client_phone: data.client_phone,
+            client_id: clientId,
+            service_id: data.service_id,
+            date: data.date,
+            time: data.time,
+            professional_id: data.professional_id || null,
+            status: data.status || 'pending',
+            origin: 'site',
+            price: initialPrice // SAVE PRICE
+        })
+
+        if (apptError) {
+            console.error("[CreateAppt] Insert Appointment Error:", apptError)
+            return { error: "Erro ao salvar agendamento: " + apptError.message }
+        }
+
+        revalidatePath('/dashboard')
+        revalidatePath('/dashboard/clientes')
+        return { success: true }
+
+    } catch (e: any) {
+        console.error("[CreateAppt] UNHANDLED EXCEPTION:", e)
+        return { error: `Erro inesperado: ${e.message}` }
+    }
+}
+
+// --- QUICK SALE ACTION ---
+// ... imports
+import { toZonedTime, format as formatTz } from 'date-fns-tz'
+
+// ... existing code ...
+
+// --- QUICK SALE ACTION ---
+export async function createQuickSale(data: {
+    barbershop_id: string
+    client_name: string
+    client_phone?: string // Optional for quick sale if existing
+    items: { id: string, name: string, quantity: number, price: number, type: 'service' | 'product' }[]
+    total_price: number
+}) {
+    console.log("[QuickSale] Initiating...", data)
     const supabase = await createClient()
     const adminSupabase = createAdminClient()
 
-    // 1. Identify User Context
     const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { error: "Unauthorized" }
 
-    // 2. FETCH SHOP OWNER (Crucial for Identity & RLS)
-    // We must know WHO owns this shop to link the client/appointment correctly.
-    // Use Admin Client to ensure we can read the shop details.
-    const { data: shop } = await adminSupabase
-        .from('barbershops')
-        .select('owner_id')
-        .eq('id', data.barbershop_id)
+    // 1. Resolve Client (Simplified Logic)
+    const { data: shop } = await adminSupabase.from('barbershops').select('owner_id').eq('id', data.barbershop_id).single()
+    if (!shop) return { error: "Shop Error" }
+
+    let clientId: string | null = null
+
+    // Search by Name
+    const { data: existingClient } = await adminSupabase
+        .from('clients')
+        .select('id')
+        .eq('barbershop_id', data.barbershop_id)
+        .ilike('name', data.client_name)
+        .limit(1)
         .single()
 
-    if (!shop || !shop.owner_id) {
-        throw new Error("CRITICAL: Barbershop Owner not found. Cannot create secure appointment.")
-    }
-    const shopOwnerId = shop.owner_id
-
-    let clientId: string | null = null;
-    let authUserId = user ? user.id : null;
-
-    // 3. STRATEGY A: Resolve by Auth ID (Preferred)
-    if (authUserId) {
-        // Use Admin Client to ensure we can find the client even if RLS is strict
-        const { data: existingClient } = await adminSupabase
-            .from('clients')
-            .select('id')
-            .eq('barbershop_id', data.barbershop_id)
-            .eq('auth_user_id', authUserId)
-            .single()
-
-        if (existingClient) {
-            clientId = existingClient.id
-        }
-    }
-
-    // 4. STRATEGY B: Resolve by Phone (Fallback)
-    if (!clientId) {
-        // Choose the client linked to this shop
-        // (Note: owner_id check here is implicit if RLS works, but with Admin client we rely on barbershop_id)
-        const { data: phoneClient } = await adminSupabase
-            .from('clients')
-            .select('id, auth_user_id')
-            .eq('barbershop_id', data.barbershop_id)
-            .eq('phone', data.client_phone)
-            .limit(1)
-            .single()
-
-        if (phoneClient) {
-            clientId = phoneClient.id
-
-            // Link Auth if needed
-            if (authUserId && !phoneClient.auth_user_id) {
-                await adminSupabase
-                    .from('clients')
-                    .update({ auth_user_id: authUserId })
-                    .eq('id', clientId)
-            }
-        }
-    }
-
-    // 5. STRATEGY C: Create New Client (Last Resort)
-    if (!clientId) {
-        // Use Admin Client to Insert
-        const { data: newClient, error: createError } = await adminSupabase
+    if (existingClient) {
+        clientId = existingClient.id
+    } else {
+        // Create new
+        const { data: newClient, error: clientError } = await adminSupabase
             .from('clients')
             .insert({
                 barbershop_id: data.barbershop_id,
-                owner_id: shopOwnerId, // <--- EXPLICIT IDENTITY LINK
+                owner_id: shop.owner_id,
                 name: data.client_name,
-                phone: data.client_phone,
-                auth_user_id: authUserId
+                // DB Constraint Fix: Phone is NOT NULL and UNIQUE. 
+                // We must generate a unique string if no phone is provided to allow multiple "no-phone" clients.
+                phone: data.client_phone || `temp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
             })
             .select('id')
             .single()
 
-        if (createError || !newClient) {
-            console.error("CRITICAL CRM ERROR: Failed to create client", createError)
-            throw new Error("CRITICAL: Failed to resolve client. Cannot create orphan appointment.")
+        if (clientError) {
+            console.error("[QuickSale] Client Creation Error:", clientError)
+            return { error: `Erro ao criar cliente: ${clientError.message}` }
         }
 
-        clientId = newClient.id
+        if (newClient) clientId = newClient.id
     }
 
-    // 6. FINAL GAURD RAIL
-    if (!clientId) {
-        throw new Error("CRITICAL: Client ID Resolution Failed. Aborting appointment.")
-    }
+    if (!clientId) return { error: "Erro crítico: ID do cliente não gerado." }
 
-    // 7. AUTO-HEAL IDENTITY (The Bulletproof Fix)
-    // Even if we found an existing client, we must ensure it is linked to the current shop owner.
-    // This fixes "Orphan Clients" (created before the fix) and "Partial Migrations".
-    await adminSupabase
-        .from('clients')
-        .update({
-            owner_id: shopOwnerId,
-            // Also ensure barbershop_id is correct (in case of multi-shop drift, though less likely)
-            barbershop_id: data.barbershop_id
-        })
-        .eq('id', clientId)
+    // 2. Create 'Completed' Appointment (The Sale Record)
+    // TIMEZONE FIX: Force BRL
+    const timeZone = 'America/Sao_Paulo'
+    const nowBrl = toZonedTime(new Date(), timeZone)
 
-    // 8. Create Appointment
-    // Use Admin Client to ensure appointment is created regardless of specific insertion policies for Anon
-    const { error } = await adminSupabase.from('agendamentos').insert({
+    // Format: YYYY-MM-DD
+    const dateStr = formatTz(nowBrl, 'yyyy-MM-dd', { timeZone })
+    // Format: HH:MM
+    const timeStr = formatTz(nowBrl, 'HH:mm', { timeZone })
+
+    const { data: appt, error: apptError } = await adminSupabase.from('agendamentos').insert({
         barbershop_id: data.barbershop_id,
-        owner_id: shopOwnerId, // <--- EXPLICIT IDENTITY LINK
-        client_name: data.client_name,
-        client_phone: data.client_phone,
+        owner_id: shop.owner_id,
         client_id: clientId,
-        service_id: data.service_id,
-        date: data.date,
-        time: data.time,
-        professional_id: data.professional_id || null,
-        status: 'pending',
-        origin: 'site'
-    })
+        client_name: data.client_name, // Snapshot
+        client_phone: data.client_phone || "",
+        service_id: null,
+        date: dateStr, // Explicit BRL Date
+        time: timeStr, // Explicit BRL Time
+        status: 'completed',
+        origin: 'quick_sale',
+        price: data.total_price,
+        concluded_at: new Date().toISOString() // UTC is fine for timestamp columns, but `date` col needs local.
+    }).select('id').single()
 
-    if (error) {
-        console.error("Erro ao criar agendamento:", error)
-        return { error: "Erro ao salvar agendamento." }
+    if (apptError || !appt) {
+        console.error("[QuickSale] Error:", apptError)
+        return { error: "Erro ao registrar venda: " + apptError?.message }
     }
 
-    // Revalidate CRM
+    // 3. Insert Items
+    const itemsPayload = data.items.map(i => ({
+        appointment_id: appt.id,
+        product_id: i.id,
+        quantity: i.quantity,
+        price: i.price,
+        name: i.name
+    }))
+
+    const { error: itemsError } = await adminSupabase.from('appointment_products').insert(itemsPayload)
+
+    if (itemsError) console.error("Error saving items:", itemsError)
+
+    // 4. DECREMENT STOCK
+    for (const item of data.items) {
+        // Only decrement if it's a product (including bar items)
+        // Services usually don't have stock, but if they do (e.g. products sold as service), we might want to?
+        // Usually type='product' check is enough.
+        if (item.type === 'product') {
+            const { data: currentProd } = await adminSupabase.from('products_v2').select('quantity').eq('id', item.id).single()
+            if (currentProd) {
+                const newQty = (currentProd.quantity || 0) - item.quantity
+                await adminSupabase.from('products_v2').update({ quantity: newQty }).eq('id', item.id)
+            }
+        }
+    }
+
+    // FORCE REVALIDATE EVERYWHERE
+    revalidatePath('/', 'layout') // Nuclear option to ensure dashboard updates
     revalidatePath('/dashboard')
-    revalidatePath('/dashboard/clientes')
+    revalidatePath('/dashboard/relatorios')
 
     return { success: true }
 }
@@ -771,7 +927,7 @@ export async function getShopProducts(barbershopId: string) {
 
 export async function updateAppointmentStatus(data: {
     appointmentId: string
-    status: 'confirmed' | 'canceled' | 'pending' | 'completed'
+    status: 'confirmed' | 'canceled' | 'pending' | 'completed' | 'em_atendimento'
     price?: number
     products?: { id: string, name: string, quantity: number, price: number }[]
 }) {
@@ -783,7 +939,9 @@ export async function updateAppointmentStatus(data: {
     // Financial Audit: Explicitly handle concluded_at
     const payload: any = { status: data.status }
 
-    if (data.status === 'completed') {
+    // FORCE LOWERCASE & VALIDATE
+    if (data.status === 'completed' || (data.status as string).toLowerCase() === 'concluído' || (data.status as string).toLowerCase() === 'concluido') {
+        payload.status = 'completed'
         // Cash Flow Trigger: The moment money/service is realized
         payload.concluded_at = new Date().toISOString()
     } else {
@@ -959,5 +1117,141 @@ export async function updateOrderStatus(orderId: string, status: string) {
 
     revalidatePath('/dashboard/pedidos')
     revalidatePath('/dashboard/relatorios')
+    return { success: true }
+}
+
+// --- REVENUE & ITEMS ACTIONS ---
+// --- REVENUE & ITEMS ACTIONS ---
+export async function addAppointmentItems(appointmentId: string, items: { id: string, name: string, price: number, quantity: number }[]) {
+    const supabase = await createClient()
+    const adminSupabase = createAdminClient() // Use Admin to bypass RLS/Cache issues
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { error: "Não autorizado" }
+
+    // 0. Verify Ownership & Get Shop Context
+    // We need to know which shop this appointment belongs to, and if user owns it.
+    const { data: appointment, error: appError } = await adminSupabase
+        .from('agendamentos')
+        .select('id, barbershop_id, service_id, price, barbershops!inner(owner_id)')
+        .eq('id', appointmentId)
+        .single()
+
+    if (appError || !appointment) {
+        console.error("Appointment check error:", appError)
+        return { error: "Agendamento não encontrado ou sem permissão." }
+    }
+
+    // Strict Check: User must be Owner
+    // Handle potential array return (safe access)
+    const shopData: any = appointment.barbershops
+    const ownerId = Array.isArray(shopData) ? shopData[0]?.owner_id : shopData?.owner_id
+
+    if (ownerId !== user.id) {
+        return { error: "Você não tem permissão para alterar este agendamento." }
+    }
+
+    // 1. Insert Items using ADMIN (Bypassing RLS/Cache issues)
+    const itemsPayload = items.map(i => ({
+        appointment_id: appointmentId,
+        product_id: i.id,
+        quantity: i.quantity,
+        price: i.price,
+        name: i.name
+    }))
+    const { error: insertError } = await adminSupabase.from('appointment_products').insert(itemsPayload)
+    if (insertError) return { error: "Erro ao inserir itens: " + insertError.message }
+
+    // 1.5 DECREMENT STOCK (Admin)
+    for (const item of items) {
+        // Check type via product_id (items passed here might not have type, let's fetch)
+        const { data: prodDef } = await adminSupabase.from('products_v2').select('type, quantity').eq('id', item.id).single()
+        if (prodDef && prodDef.type === 'product') {
+            const newQty = (prodDef.quantity || 0) - item.quantity
+            await adminSupabase.from('products_v2').update({ quantity: newQty }).eq('id', item.id)
+        }
+    }
+
+    // 2. Recalculate Total Price
+    // Use the fetched appointment 'appointment' from step 0
+    let basePrice = 0
+    if (appointment.service_id) {
+        const { data: service } = await adminSupabase.from('products_v2').select('price').eq('id', appointment.service_id).single()
+        if (service) basePrice = service.price
+    }
+
+    // Get All Items Sum
+    const { data: allItems } = await adminSupabase
+        .from('appointment_products')
+        .select('price, quantity')
+        .eq('appointment_id', appointmentId)
+
+    const itemsTotal = (allItems || []).reduce((acc: number, i: any) => acc + (i.price * i.quantity), 0)
+    const finalTotal = basePrice + itemsTotal
+
+    // 3. Update Appointment
+    await adminSupabase.from('agendamentos').update({ price: finalTotal }).eq('id', appointmentId)
+
+    revalidatePath('/dashboard')
+    revalidatePath('/dashboard/agendamentos')
+    return { success: true }
+}
+
+export async function finishAppointment(appointmentId: string) {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { error: "Não autorizado" }
+
+    // 1. Recalculate (Just to be safe before closing)
+    const { data: app } = await supabase.from('agendamentos').select('service_id, price').eq('id', appointmentId).single()
+    if (!app) return { error: "Agendamento não encontrado" }
+
+    // If Price is 0 or null, try to fix it
+    let finalTotal = app.price || 0
+    if (!finalTotal || finalTotal === 0) {
+        let basePrice = 0
+        if (app.service_id) {
+            const { data: service } = await supabase.from('products_v2').select('price').eq('id', app.service_id).single()
+            if (service) basePrice = service.price
+        }
+        const { data: allItems } = await supabase.from('appointment_products').select('price, quantity').eq('appointment_id', appointmentId)
+        const itemsTotal = (allItems || []).reduce((acc: number, i: any) => acc + (i.price * i.quantity), 0)
+        finalTotal = basePrice + itemsTotal
+    }
+
+    // 2. Finalize
+    const { error } = await supabase.from('agendamentos').update({
+        status: 'completed',
+        concluded_at: new Date().toISOString(),
+        price: finalTotal
+    }).eq('id', appointmentId)
+
+    if (error) return { error: "Erro ao finalizar: " + error.message }
+
+    // 3. DECREMENT STOCK
+    // Fetch items
+    const { data: items } = await supabase.from('appointment_products').select('product_id, quantity, products_v2(type)').eq('appointment_id', appointmentId)
+
+    if (items) {
+        for (const item of items) {
+            // Check if product type is 'product' (via join)
+            // products_v2 might be null if deleted, but we have product_id.
+            // Let's rely on the joined type or fetch it.
+            const type = item.products_v2?.type
+            if (type === 'product') {
+                // Decrement
+                const { data: currentProd } = await supabase.from('products_v2').select('quantity').eq('id', item.product_id).single()
+                if (currentProd) {
+                    const newQty = (currentProd.quantity || 0) - item.quantity
+                    await supabase.from('products_v2').update({ quantity: newQty }).eq('id', item.product_id)
+                }
+            }
+        }
+    }
+
+    revalidatePath('/dashboard')
+    revalidatePath('/dashboard/agendamentos')
+    revalidatePath('/dashboard/relatorios')
+    revalidatePath('/dashboard/agenda-futura')
     return { success: true }
 }
