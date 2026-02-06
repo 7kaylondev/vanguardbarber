@@ -19,7 +19,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select"
-import { updateAppointmentStatus, getShopProducts } from "@/app/(main)/dashboard/actions"
+import { updateAppointmentStatus, getShopProducts, getAppointmentProducts } from "@/app/(main)/dashboard/actions"
 import { toast } from "sonner"
 
 interface CompleteAppointmentDialogProps {
@@ -37,6 +37,7 @@ export function CompleteAppointmentDialog({
 }: CompleteAppointmentDialogProps) {
     const [isLoading, setIsLoading] = useState(false)
     const [servicePrice, setServicePrice] = useState<string>("0")
+    const [isLoadingData, setIsLoadingData] = useState(false) // Fetching existing items
 
     // POS State
     const [availableProducts, setAvailableProducts] = useState<any[]>([])
@@ -54,12 +55,23 @@ export function CompleteAppointmentDialog({
             setCart([])
             setSelectedProductId("")
 
-            // Fetch Products
+            // Fetch Products (Catalog)
             if (appointment.barbershop_id) {
                 getShopProducts(appointment.barbershop_id).then((products) => {
                     setAvailableProducts(products || [])
                 })
             }
+
+            // Fetch Existing Consumed Items
+            setIsLoadingData(true)
+            getAppointmentProducts(appointment.id)
+                .then((items) => {
+                    if (items) {
+                        setCart(items)
+                    }
+                })
+                .catch(console.error)
+                .finally(() => setIsLoadingData(false))
         }
     }, [isOpen, appointment])
 
@@ -208,6 +220,20 @@ export function CompleteAppointmentDialog({
                                             ))}
                                         </div>
                                     )}
+
+                                    {/* OTHER PRODUCTS (e.g. Clube / Plans) */}
+                                    {availableProducts.filter(p => p.category && p.category !== 'retail' && p.category !== 'bar').length > 0 && (
+                                        <div>
+                                            <div className="px-2 py-1.5 text-xs font-semibold text-zinc-500 uppercase tracking-wider border-t border-zinc-800 mt-2 pt-2">
+                                                ✨ Outros / Clube
+                                            </div>
+                                            {availableProducts.filter(p => p.category && p.category !== 'retail' && p.category !== 'bar').map(p => (
+                                                <SelectItem key={p.id} value={p.id}>
+                                                    {p.name} - R$ {Number(p.price).toFixed(2)}
+                                                </SelectItem>
+                                            ))}
+                                        </div>
+                                    )}
                                 </SelectContent>
                             </Select>
                             <Button
@@ -221,7 +247,12 @@ export function CompleteAppointmentDialog({
                         </div>
 
                         {/* CART LIST */}
-                        {cart.length > 0 && (
+                        {isLoadingData ? (
+                            <div className="flex justify-center p-4 text-zinc-500 text-sm">
+                                <Loader2 className="animate-spin mr-2 h-4 w-4" />
+                                Carregando consumo...
+                            </div>
+                        ) : cart.length > 0 && (
                             <div className="rounded-md border border-zinc-800 bg-zinc-900/30 overflow-hidden">
                                 {cart.map((item) => (
                                     <div key={item.id} className="flex justify-between items-center p-2 text-sm border-b border-zinc-800/50 last:border-0 hover:bg-zinc-900/50 transition-colors">

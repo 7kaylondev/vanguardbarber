@@ -69,53 +69,67 @@ export async function upsertProduct(formData: FormData) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { error: "Não autorizado" }
 
-    const id = formData.get('id') as string // Optional (if editing)
-    const barbershop_id = formData.get('barbershop_id') as string
-    const name = formData.get('name') as string
-    const price = parseFloat(formData.get('price') as string)
-    const description = formData.get('description') as string
-    const type = formData.get('type') as string || 'service'
-    const category = formData.get('category') as string || 'retail' // NEW: retail or bar
-    const image_url = formData.get('image_url') as string
-    const highlight = formData.get('highlight') === 'true'
-    const quantity = parseInt(formData.get('quantity') as string || '0')
+    try {
+        const id = formData.get('id') as string // Optional (if editing)
+        const barbershop_id = formData.get('barbershop_id') as string
+        const name = formData.get('name') as string
+        const price = parseFloat(formData.get('price') as string)
+        const description = formData.get('description') as string
+        const type = formData.get('type') as string || 'service'
+        const category = formData.get('category') as string || 'retail' // NEW: retail or bar
+        const image_url = formData.get('image_url') as string
+        const highlight = formData.get('highlight') === 'true'
+        const quantity = parseInt(formData.get('quantity') as string || '0')
 
-    console.log('[UpsertProduct] Received:', { name, category, quantity })
+        console.log('[UpsertProduct] Received:', { name, category, quantity })
 
-    // Logic: Bar items are hidden online
-    const is_visible_online = category === 'retail'
+        // Logic: Bar items are hidden online
+        const is_visible_online = category === 'retail'
 
-    const payload = {
-        barbershop_id,
-        name,
-        price,
-        description,
-        type,
-        category,
-        is_visible_online, // NEW: Enforce visibility rule
-        image_url,
-        highlight,
-        quantity, // NEW: Stock
-        status: true // Active by default
+        const payload = {
+            barbershop_id,
+            name,
+            price,
+            description,
+            type,
+            category,
+            is_visible_online, // NEW: Enforce visibility rule
+            image_url,
+            highlight,
+            quantity, // NEW: Stock
+            status: true // Active by default
+        }
+
+        console.log('[UpsertProduct] Payload built:', payload)
+
+        let error
+        if (id) {
+            // Update
+            console.log('[UpsertProduct] Updating ID:', id)
+            const res = await supabase.from('products_v2').update(payload).eq('id', id)
+            error = res.error
+        } else {
+            // Insert
+            console.log('[UpsertProduct] Inserting new...')
+            const res = await supabase.from('products_v2').insert(payload)
+            error = res.error
+        }
+
+        if (error) {
+            console.error('[UpsertProduct] DATABASE ERROR:', error)
+            return { error: `Erro no banco de dados: ${error.message} (${error.code})` }
+        }
+
+        console.log('[UpsertProduct] Success!')
+
+        revalidatePath('/dashboard/servicos')
+        revalidatePath('/dashboard/produtos')
+        revalidatePath('/dashboard/bar')
+        return { success: true }
+    } catch (e: any) {
+        console.error('[UpsertProduct] CRITICAL EXCEPTION:', e)
+        return { error: `Erro interno do servidor: ${e.message}` }
     }
-
-    let error
-    if (id) {
-        // Update
-        const res = await supabase.from('products_v2').update(payload).eq('id', id)
-        error = res.error
-    } else {
-        // Insert
-        const res = await supabase.from('products_v2').insert(payload)
-        error = res.error
-    }
-
-    if (error) return { error: error.message }
-
-    revalidatePath('/dashboard/servicos')
-    revalidatePath('/dashboard/produtos')
-    revalidatePath('/dashboard/bar')
-    return { success: true }
 }
 
 export async function deleteProduct(productId: string) {
@@ -963,25 +977,24 @@ export async function updateAppointmentStatus(data: {
         return { error: "Erro ao atualizar status." }
     }
 
-    // Save Products if provided
-    if (data.products && data.products.length > 0) {
+    // Save Products if provided (Array exists, even if empty)
+    if (data.products) {
         const productInserts = data.products.map(p => ({
             appointment_id: data.appointmentId,
             product_id: p.id,
             quantity: p.quantity,
             price: p.price,
-            name: p.name // Snapshot name in case it changes later (optional, check if column exists)
+            name: p.name
         }))
 
-        // First clean old ones if any? Or just append?
-        // Let's assume on completion we only Add new ones or Replace all? 
-        // Safer to Replace All for this specific appointment to avoid dupes if they click 'Complete' twice with edits.
+        // Replace All Strategy: Clear old, insert new (if any)
         await supabase.from('appointment_products').delete().eq('appointment_id', data.appointmentId)
 
-        const { error: prodError } = await supabase.from('appointment_products').insert(productInserts)
-        if (prodError) {
-            console.error("Error saving appointment products:", prodError)
-            // Non-blocking but good to know
+        if (productInserts.length > 0) {
+            const { error: prodError } = await supabase.from('appointment_products').insert(productInserts)
+            if (prodError) {
+                console.error("Error saving appointment products:", prodError)
+            }
         }
     }
 
@@ -1254,4 +1267,20 @@ export async function finishAppointment(appointmentId: string) {
     revalidatePath('/dashboard/relatorios')
     revalidatePath('/dashboard/agenda-futura')
     return { success: true }
+}
+
+export async function getAppointmentProducts(appointmentId: string) {
+    const supabase = await createClient()
+    const { data } = await supabase
+        .from('appointment_products')
+        .select('product_id, name, price, quantity')
+        .eq('appointment_id', appointmentId)
+
+    // Map to friendly format
+    return (data || []).map(item => ({
+        id: item.product_id,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity
+    }))
 }

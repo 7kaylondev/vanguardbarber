@@ -25,21 +25,30 @@ export function ProductFormDialog({ shopId, type, category = "retail", trigger, 
     const [loading, setLoading] = useState(false)
 
     async function handleSubmit(formData: FormData) {
-        setLoading(true)
-        formData.append('barbershop_id', shopId)
-        formData.append('type', type)
-        formData.append('category', category) // Pass context
-        if (initialData?.id) formData.append('id', initialData.id)
+        try {
+            setLoading(true)
+            console.log("Submitting form...", Object.fromEntries(formData))
 
-        const res = await upsertProduct(formData)
-        setLoading(false)
+            formData.append('barbershop_id', shopId)
+            formData.append('type', type)
+            formData.append('category', category)
+            if (initialData?.id) formData.append('id', initialData.id)
 
-        if (res?.error) {
-            toast.error(res.error)
-        } else {
-            toast.success(initialData ? "Atualizado!" : "Criado com sucesso!")
-            setOpen(false)
-            if (onSuccess) onSuccess()
+            const res = await upsertProduct(formData)
+            console.log("Server response:", res)
+
+            if (res?.error) {
+                toast.error(res.error)
+            } else {
+                toast.success(initialData ? "Atualizado!" : "Criado com sucesso!")
+                setOpen(false)
+                if (onSuccess) onSuccess()
+            }
+        } catch (error: any) {
+            console.error("Client Error:", error)
+            toast.error("Erro no envio: " + error.message)
+        } finally {
+            setLoading(false)
         }
     }
 
@@ -74,10 +83,14 @@ export function ProductFormDialog({ shopId, type, category = "retail", trigger, 
                             <Label>Preço (R$)</Label>
                             <Input name="price" defaultValue={initialData?.price} type="number" step="0.01" placeholder="0.00" required className="bg-black border-zinc-700" />
                         </div>
-                        <div className="space-y-2">
-                            <Label>Estoque Atual</Label>
-                            <Input name="quantity" defaultValue={initialData?.quantity || 0} type="number" placeholder="0" className="bg-black border-zinc-700" />
-                        </div>
+                        {type !== 'service' ? (
+                            <div className="space-y-2">
+                                <Label>Estoque Atual</Label>
+                                <Input name="quantity" defaultValue={initialData?.quantity || 0} type="number" placeholder="0" className="bg-black border-zinc-700" />
+                            </div>
+                        ) : (
+                            <input type="hidden" name="quantity" value="0" />
+                        )}
                         <div className="col-span-2 space-y-2">
                             <Label>Imagem URL (Opcional)</Label>
                             <Input name="image_url" defaultValue={initialData?.image_url} placeholder="https://..." className="bg-black border-zinc-700" />
